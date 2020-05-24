@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"math/rand"
 	"time"
 
 	tbot "github.com/Syfaro/telegram-bot-api"
@@ -11,16 +12,27 @@ import (
 )
 
 // Структура игрока во время активной сессии
-type TPlayer struct {
+type User struct {
 	TUser       TUser
 	ChatId      int64
 	LastMsgTime time.Time
+	Player      Player
+}
+
+type UserMsg struct {
+	ChatId int64
+	Msg    string
 }
 
 var (
-	db       *sql.DB
-	TPlayers map[int64]*TPlayer
+	db    *sql.DB
+	Users map[int64]*User
+	TBot  *tbot.BotAPI
 )
+
+func getRandInt(min, max int) int {
+	return rand.Intn(max-min+1) + min
+}
 
 func main() {
 	var err error
@@ -35,63 +47,101 @@ func main() {
 	}
 	defer db.Close()
 
-	bot, err := tbot.NewBotAPI("839806396:AAGKWntZYsh4z1ippHIcDVWKVRy0P_ECr2o")
+	// Читаем и инициализируем карту
+	ReadMapFromDB()
+
+	TBot, err = tbot.NewBotAPI("839806396:AAGKWntZYsh4z1ippHIcDVWKVRy0P_ECr2o")
 	if err != nil {
 		log.Fatalf("Ошибка инициализации бота: %s", err)
 	}
-	log.Printf("Инициализирован бот %s", bot.Self.UserName)
-	bot.Debug = true
+	log.Printf("Инициализирован бот %s", TBot.Self.UserName)
+	//TBot.Debug = true
 
-	TPlayers = make(map[int64]*TPlayer)
+	Users = make(map[int64]*User)
 
 	// Делаем постоянные запросы с лонг-полингом к серверу Телеграма, ответы складываем в отдельный канал
 	u := tbot.NewUpdate(0)
 	u.Timeout = 60
-	updates, err := bot.GetUpdatesChan(u)
+	updates, err := TBot.GetUpdatesChan(u)
 
 	// Крутим бесконечный цикл с разбором поступивших ответов
 	for upd := range updates {
 		// Если нет прямого сообщения нам - скип
-		if upd.Message == nil {
+		if upd.Message == nil && upd.CallbackQuery.Message == nil {
 			continue
 		}
+
+		var usr *tbot.User
+		var um UserMsg
+		// Сообщение может придти напрямую от пользователя, а может от самого бота через инлайн-кнопки. Проверяем оба вариант, собираем данные пользователя, чат и сообщение
+		if upd.Message == nil {
+			usr = upd.CallbackQuery.From
+			um = UserMsg{
+				ChatId: upd.CallbackQuery.Message.Chat.ID,
+				Msg:    upd.CallbackQuery.Data}
+		} else {
+			usr = upd.Message.From
+			um = UserMsg{
+				ChatId: upd.Message.Chat.ID,
+				Msg:    upd.Message.Text}
+		}
+
+		fmt.Println(um)
+
 		// Если пишет бот - скип
-		if upd.Message.From.IsBot {
+		if usr.IsBot {
 			fmt.Println("Боты атакуют!!")
 			continue
 		}
+
 		// Проверяем пользователя, написавшего сообщение. Если такой пользователь уже есть в игровой сессии - обновляем время последнего сообщения
-		user_id := int64(upd.Message.From.ID)
-		if _, ok := TPlayers[user_id]; ok {
-			TPlayers[user_id].LastMsgTime = time.Now().UTC()
+		user_id := int64(usr.ID)
+		fmt.Printf("%s: %s\n", usr.UserName, um.Msg)
+		if _, ok := Users[user_id]; ok {
+			//fmt.Println("Пользователь есть в мапе")
+			Users[user_id].LastMsgTime = time.Now().UTC()
+			// передаём пользователю пришедшее сообщение
+			Users[user_id].Player.ChanIn <- um
 			// если же нету - создаём пользователя и в БД и в мапе игровой сессии
 		} else {
+			//fmt.Println("Пользователя нет в мапе")
 			// Ищем такого пользователя в БД
-			f, err := isTUserExist(user_id)
+			tu, err := getTUserByID(user_id)
 			if err != nil {
 				fmt.Printf("Ошибка поиска пользователя с id %d: %s", user_id, err)
 			}
-			// Если нет - создаём
-			t_user := TUser{
-				UserID:       int64(upd.Message.From.ID),
-				UserName:     upd.Message.From.UserName,
-				FirstName:    upd.Message.From.FirstName,
-				LastName:     upd.Message.From.LastName,
-				Lang:         upd.Message.From.LanguageCode,
-				CreationDate: time.Now().UTC()}
-			if !f {
-				err = createTUser(t_user)
+
+			// Если не нашли пользователя - создаём в БД
+			if tu.UserID == 0 {
+				fmt.Println("Пользователя нет в БД")
+				tu = TUser{
+					UserID:       int64(usr.ID),
+					UserName:     usr.UserName,
+					FirstName:    usr.FirstName,
+					LastName:     usr.LastName,
+					Lang:         usr.LanguageCode,
+					CreationDate: time.Now().UTC()}
+				err = createTUser(tu)
 				if err != nil {
 					fmt.Printf("Ошибка создания пользователя с id %d: %s", user_id, err)
-				} else {
-					TPlayers[user_id] = &TPlayer{
-						TUser:       t_user,
-						ChatId:      upd.Message.Chat.ID,
-						LastMsgTime: time.Now().UTC()}
+					continue
 				}
 			}
-		}
 
-		log.Printf("[%s] %s", upd.Message.From.UserName, upd.Message.Text)
+			//fmt.Println(tu)
+			// Создаём пользователя в мапе игровой сессии
+			Users[user_id] = &User{
+				TUser:       tu,
+				ChatId:      um.ChatId,
+				LastMsgTime: time.Now().UTC(),
+				Player:      createPlayerById(user_id)}
+
+			//fmt.Println(Users[user_id])
+			// Запускаем горутину пользователя
+			go Users[user_id].Player.Start()
+			// передаём в горутину пользователя пришедшее сообщение
+			Users[user_id].Player.ChanIn <- um
+		}
+		//log.Printf("[%s] %s", msg.From.UserName, msg.Text)
 	}
 }

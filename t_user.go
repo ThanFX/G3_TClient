@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-const FIND_TUSER_BY_ID = "SELECT user_id FROM t_user WHERE user_id = $1"
+const FIND_TUSER_BY_ID = "SELECT * FROM t_user WHERE user_id = $1"
 const CREATE_TUSER = "INSERT INTO t_user VALUES ($1, $2, $3, $4, $5, $6)"
 
 // Структура физических пользователей Телеграма
@@ -18,15 +18,15 @@ type TUser struct {
 	CreationDate time.Time
 }
 
-func isTUserExist(user_id int64) (bool, error) {
-	var tu int
-	err := db.QueryRow(FIND_TUSER_BY_ID, user_id).Scan(&tu)
+func getTUserByID(user_id int64) (TUser, error) {
+	var tu TUser
+	err := db.QueryRow(FIND_TUSER_BY_ID, user_id).Scan(&tu.UserID, &tu.UserName, &tu.FirstName, &tu.LastName, &tu.Lang, &tu.CreationDate)
 	if err == sql.ErrNoRows {
-		return false, nil
+		return tu, nil
 	} else if err != nil {
-		return false, err
+		return tu, err
 	}
-	return true, nil
+	return tu, nil
 }
 
 func createTUser(tu TUser) error {
