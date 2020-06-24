@@ -11,19 +11,21 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// Структура игрока во время активной сессии
+// User - структура игрока во время активной сессии
 type User struct {
 	TUser       TUser
-	ChatId      int64
+	ChatID      int64
 	LastMsgTime time.Time
 	Player      Player
 }
 
+// UserMsg - структура хранения пришедшего сообщения для каждого игрока
 type UserMsg struct {
-	ChatId int64
+	ChatID int64
 	Msg    string
 }
 
+// Users - мапа всех активных игроков в текущей сессии. Ключ - UserID
 var (
 	db    *sql.DB
 	Users map[int64]*User
@@ -31,12 +33,13 @@ var (
 )
 
 func getRandInt(min, max int) int {
+	rand.Seed(time.Now().UTC().UnixNano())
 	return rand.Intn(max-min+1) + min
 }
 
 func main() {
 	var err error
-	local := "host=localhost port=5432 user=postgres password=postgres dbname=g3 sslmode=disable"
+	local := "host=localhost port=5432 user=postgres password=postgres dbname=postgres sslmode=disable"
 	db, err = sql.Open("postgres", local)
 	if err != nil {
 		log.Fatalf("Ошибка соединения с БД: %s", err)
@@ -77,16 +80,16 @@ func main() {
 		if upd.Message == nil {
 			usr = upd.CallbackQuery.From
 			um = UserMsg{
-				ChatId: upd.CallbackQuery.Message.Chat.ID,
+				ChatID: upd.CallbackQuery.Message.Chat.ID,
 				Msg:    upd.CallbackQuery.Data}
 		} else {
 			usr = upd.Message.From
 			um = UserMsg{
-				ChatId: upd.Message.Chat.ID,
+				ChatID: upd.Message.Chat.ID,
 				Msg:    upd.Message.Text}
 		}
 
-		fmt.Println(um)
+		//fmt.Println(um)
 
 		// Если пишет бот - скип
 		if usr.IsBot {
@@ -95,20 +98,20 @@ func main() {
 		}
 
 		// Проверяем пользователя, написавшего сообщение. Если такой пользователь уже есть в игровой сессии - обновляем время последнего сообщения
-		user_id := int64(usr.ID)
+		userID := int64(usr.ID)
 		fmt.Printf("%s: %s\n", usr.UserName, um.Msg)
-		if _, ok := Users[user_id]; ok {
+		if _, ok := Users[userID]; ok {
 			//fmt.Println("Пользователь есть в мапе")
-			Users[user_id].LastMsgTime = time.Now().UTC()
+			Users[userID].LastMsgTime = time.Now().UTC()
 			// передаём пользователю пришедшее сообщение
-			Users[user_id].Player.ChanIn <- um
+			Users[userID].Player.ChanIn <- um
 			// если же нету - создаём пользователя и в БД и в мапе игровой сессии
 		} else {
 			//fmt.Println("Пользователя нет в мапе")
 			// Ищем такого пользователя в БД
-			tu, err := getTUserByID(user_id)
+			tu, err := getTUserByID(userID)
 			if err != nil {
-				fmt.Printf("Ошибка поиска пользователя с id %d: %s", user_id, err)
+				fmt.Printf("Ошибка поиска пользователя с id %d: %s", userID, err)
 			}
 
 			// Если не нашли пользователя - создаём в БД
@@ -123,24 +126,24 @@ func main() {
 					CreationDate: time.Now().UTC()}
 				err = createTUser(tu)
 				if err != nil {
-					fmt.Printf("Ошибка создания пользователя с id %d: %s", user_id, err)
+					fmt.Printf("Ошибка создания пользователя с id %d: %s", userID, err)
 					continue
 				}
 			}
 
 			//fmt.Println(tu)
 			// Создаём пользователя в мапе игровой сессии
-			Users[user_id] = &User{
+			Users[userID] = &User{
 				TUser:       tu,
-				ChatId:      um.ChatId,
+				ChatID:      um.ChatID,
 				LastMsgTime: time.Now().UTC(),
-				Player:      createPlayerById(user_id)}
+				Player:      createPlayerByID(userID)}
 
-			//fmt.Println(Users[user_id])
+			//fmt.Println(Users[userID].Player.ChunkID)
 			// Запускаем горутину пользователя
-			go Users[user_id].Player.Start()
+			go Users[userID].Player.Start()
 			// передаём в горутину пользователя пришедшее сообщение
-			Users[user_id].Player.ChanIn <- um
+			Users[userID].Player.ChanIn <- um
 		}
 		//log.Printf("[%s] %s", msg.From.UserName, msg.Text)
 	}

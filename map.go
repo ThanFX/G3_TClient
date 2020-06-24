@@ -4,102 +4,148 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-
-	"github.com/ThanFX/G3/areas"
-	uuid "github.com/satori/go.uuid"
 )
 
-type Chunk struct {
-	ID       uuid.UUID      `json:"id"`
-	X        int            `json:"x"`
-	Y        int            `json:"y"`
-	Terrains []TerrainChunk `json:"terrains"`
-	Lakes    []LakeChunk    `json:"lakes"`
-	Rivers   []RiverChunk   `json:"rivers"`
+const dbGetFullMap = `SELECT mc.id, mc.x, mc.y, json_agg(json_build_object('type', mt."type", 'name', mt."name", 'size', mct."size"))
+						FROM map_chunk mc
+						join map_chunk_terrains mct on mct.chunk_id = mc.id
+						join map_terrain mt on mt.id = mct.terrain_id
+						group by 1, 2, 3;`
+const dbGetAllRivews = `select chunk_id, "from", "to", "size", is_bridge from map_chunk_rivers;`
+
+// ChunkTerrain - структура данных о местности в чанке
+type ChunkTerrain struct {
+	Type string
+	Name string
+	Size int
 }
 
-type TerrainChunk struct {
-	Type string `json:"type"`
-	Size int    `json:"size"`
+// MapRiver - структура данных о реке в чанке
+type MapRiver struct {
+	From     string
+	To       string
+	Size     int
+	IsBridge bool
 }
 
-type LakeChunk struct {
-	Size int `json:"size"`
+// MapChunk - структура позиционирования чанка на глобальной карте
+type MapChunk struct {
+	ID       int
+	X        int
+	Y        int
+	Terrains []ChunkTerrain
+	Rivers   []MapRiver
 }
 
-type RiverChunk struct {
-	Size   int    `json:"size"`
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Bridge bool   `json:"bridge"`
+// Mastership - структура данных о профессии
+type Mastership struct {
+	Type string
+	Name string
 }
 
-type AreaMastery struct {
-	Name   string
-	AreaID uuid.UUID
-	Size   int
-}
-
-type AreaInfo struct {
-	Forest areas.Forest
-	Hill   areas.Hill
-	Swamp  areas.Swamp
-	Meadow areas.Meadow
-	Lake   areas.Lake
-	Rivers []areas.River
-}
-
+// Map - массив всех существующих чанков
 var (
-	Map              []Chunk
-	ChunkMasteryInfo map[uuid.UUID]map[string][]AreaMastery
-	ChunkAreasInfo   map[uuid.UUID]map[string]interface{}
-	ChunkAreasInfoEx map[uuid.UUID]AreaInfo
+	Map            map[int]MapChunk        = make(map[int]MapChunk)
+	TerrainMastery map[string][]Mastership = map[string][]Mastership{
+		"forest": {
+			{Type: "hunting", Name: "Охота"},
+			{Type: "food_gathering", Name: "Собирательство грибов и ягод"},
+		},
+		"meadow": {
+			{Type: "hunting", Name: "Охота"},
+			{Type: "food_gathering", Name: "Собирательство грибов и ягод"},
+		},
+		"hill": {
+			{Type: "hunting", Name: "Охота"},
+			{Type: "food_gathering", Name: "Собирательство грибов и ягод"},
+		},
+		"swamp": {
+			{Type: "hunting", Name: "Охота"},
+			{Type: "food_gathering", Name: "Собирательство грибов и ягод"},
+		},
+		"lake": {
+			{Type: "fishing", Name: "Рыбная ловля"},
+			{Type: "food_gathering", Name: "Собирательство грибов и ягод"},
+		},
+		"river": {
+			{Type: "hunting", Name: "Охота"},
+			{Type: "fishing", Name: "Рыбная ловля"},
+			{Type: "food_gathering", Name: "Собирательство грибов и ягод"},
+		},
+	}
 )
 
+// ReadMapFromDB - получаем все существующие чанки и сохраняем их в переменной Map
 func ReadMapFromDB() {
-	rows, err := db.Query("select chunk from map")
+	var mc MapChunk
+	rows, err := db.Query(dbGetFullMap)
 	if err != nil {
 		log.Fatalf("Ошибка получения карты из БД: %s", err)
 	}
 	defer rows.Close()
 
-	var ch string
-	var chunk Chunk
 	for rows.Next() {
-		err = rows.Scan(&ch)
+		var s string
+		err = rows.Scan(&mc.ID, &mc.X, &mc.Y, &s)
 		if err != nil {
-			log.Fatal("ошибка получения записи чанка: ", err)
+			log.Fatal("ошибка получения чанка: ", err)
 		}
-		err = json.Unmarshal([]byte(ch), &chunk)
-		if err != nil {
-			log.Fatal("ошибка парсинга данных чанка: ", err)
-		}
-		Map = append(Map, chunk)
 
-		chunk.Terrains = nil
-		chunk.Rivers = nil
+		var cts []ChunkTerrain
+		err = json.Unmarshal([]byte(s), &cts)
+		if err != nil {
+			log.Fatal("Ошибка парсинга местностей чанка: ", err)
+		}
+		mc.Terrains = cts
+		Map[mc.ID] = mc
 	}
-	err = rows.Err()
+
+	rivers := getRiversFormDB()
+	for i, v := range rivers {
+		c := Map[i]
+		c.Rivers = v
+		Map[i] = c
+	}
+	//fmt.Println(Map)
+}
+
+func getRiversFormDB() map[int][]MapRiver {
+	var r map[int][]MapRiver = make(map[int][]MapRiver)
+	rows, err := db.Query(dbGetAllRivews)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Ошибка получения рек из БД: %s", err)
 	}
-	createTerrains()
-	fmt.Println("Карта успешно загружена и инициализирована")
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var mr MapRiver
+		err = rows.Scan(&id, &mr.From, &mr.To, &mr.Size, &mr.IsBridge)
+		if err != nil {
+			log.Fatal("Ошибка парсинга данных о реке: ", err)
+		}
+		r[id] = append(r[id], mr)
+	}
+	return r
 }
 
-func getChunkByID(id uuid.UUID) Chunk {
-	var c Chunk
-	for i := range Map {
-		if uuid.Equal(id, Map[i].ID) {
-			c = Map[i]
-			break
+func getNeighborChunkID(id int) ([3][3]int, error) {
+	var nc [3][3]int
+	c := Map[id]
+	if c.ID == 0 {
+		return nc, fmt.Errorf("Не найден чанк с ID = %d", id)
+	}
+
+	for i := -1; i < 2; i++ {
+		for j := -1; j < 2; j++ {
+			nc[1-j][i+1] = getChunkByCoord(c.X+i, c.Y+j).ID
 		}
 	}
-	return c
+
+	return nc, nil
 }
 
-func getChunkByCoord(x, y int) Chunk {
-	var c Chunk
+func getChunkByCoord(x, y int) MapChunk {
+	var c MapChunk
 	for i := range Map {
 		if x == Map[i].X && y == Map[i].Y {
 			c = Map[i]
@@ -107,130 +153,4 @@ func getChunkByCoord(x, y int) Chunk {
 		}
 	}
 	return c
-}
-
-func GetChunkTerrainsInfo(chunkId uuid.UUID) map[string]interface{} {
-	return ChunkAreasInfo[chunkId]
-}
-
-func GetChunckAreasMastery(chunkId uuid.UUID) map[string][]AreaMastery {
-	return ChunkMasteryInfo[chunkId]
-}
-
-func createTerrains() {
-	ChunkMasteryInfo = make(map[uuid.UUID]map[string][]AreaMastery)
-	ChunkAreasInfo = make(map[uuid.UUID]map[string]interface{})
-	ChunkAreasInfoEx = make(map[uuid.UUID]AreaInfo)
-	for _, m := range Map {
-		var ai AreaInfo
-		ChunkAreasInfo[m.ID] = make(map[string]interface{})
-		for _, t := range m.Terrains {
-			switch t.Type {
-			case "forest":
-				id := areas.CreateForest(m.ID, t.Size)
-				ai.Forest = areas.GetForestById(id)
-				ChunkAreasInfo[m.ID]["forest"] = ai.Forest
-			case "hill":
-				id := areas.CreateHill(m.ID, t.Size)
-				ai.Hill = areas.GetHillsById(id)
-				ChunkAreasInfo[m.ID]["hill"] = ai.Hill
-			case "swamp":
-				id := areas.CreateSwamp(m.ID, t.Size)
-				ai.Swamp = areas.GetSwampById(id)
-				ChunkAreasInfo[m.ID]["swamp"] = ai.Swamp
-			case "meadow":
-				id := areas.CreateMeadow(m.ID, t.Size)
-				ai.Meadow = areas.GetMeadowById(id)
-				ChunkAreasInfo[m.ID]["meadow"] = ai.Meadow
-			case "lake":
-				id := areas.CreateLake(m.ID, t.Size)
-				ai.Lake = areas.GetLakesById(id)
-				ChunkAreasInfo[m.ID]["lakes"] = ai.Lake
-			}
-		}
-		var rs []areas.River
-		for _, r := range m.Rivers {
-			id := areas.CreateRiver(m.ID, r.Size, r.Bridge)
-			rs = append(rs, areas.GetRiversById(id)[0])
-		}
-		if len(rs) > 0 {
-			ai.Rivers = rs
-			ChunkAreasInfo[m.ID]["rivers"] = rs
-		}
-
-		/*
-			-- Озера пока не в отдельной структуре идут
-			var ls []areas.Lake
-			for _, l := range m.Lakes {
-				id := areas.CreateLake(m.ID, l.Size)
-				ls = append(ls, areas.GetLakesById(id)[0])
-			}
-			if len(ls) > 0 {
-				ChunkAreasInfo[m.ID]["lakes"] = ls
-			}
-		*/
-
-		ChunkAreasInfoEx[m.ID] = ai
-
-		ChunkMasteryInfo[m.ID] = make(map[string][]AreaMastery)
-		if !uuid.Equal(ChunkAreasInfoEx[m.ID].Forest.ID, uuid.Nil) {
-			for _, v := range ChunkAreasInfoEx[m.ID].Forest.Masterships {
-				var am AreaMastery
-				am.Name = "forest"
-				am.Size = ChunkAreasInfoEx[m.ID].Forest.Size
-				am.AreaID = ChunkAreasInfoEx[m.ID].Forest.ID
-				ChunkMasteryInfo[m.ID][v.Mastership.NameID] = append(ChunkMasteryInfo[m.ID][v.Mastership.NameID], am)
-			}
-		}
-		if !uuid.Equal(ChunkAreasInfoEx[m.ID].Hill.ID, uuid.Nil) {
-			for _, v := range ChunkAreasInfoEx[m.ID].Hill.Masterships {
-				var am AreaMastery
-				am.Name = "hill"
-				am.Size = ChunkAreasInfoEx[m.ID].Hill.Size
-				am.AreaID = ChunkAreasInfoEx[m.ID].Hill.ID
-				ChunkMasteryInfo[m.ID][v.Mastership.NameID] = append(ChunkMasteryInfo[m.ID][v.Mastership.NameID], am)
-			}
-		}
-		if !uuid.Equal(ChunkAreasInfoEx[m.ID].Swamp.ID, uuid.Nil) {
-			for _, v := range ChunkAreasInfoEx[m.ID].Swamp.Masterships {
-				var am AreaMastery
-				am.Name = "swamp"
-				am.Size = ChunkAreasInfoEx[m.ID].Swamp.Size
-				am.AreaID = ChunkAreasInfoEx[m.ID].Swamp.ID
-				ChunkMasteryInfo[m.ID][v.Mastership.NameID] = append(ChunkMasteryInfo[m.ID][v.Mastership.NameID], am)
-			}
-		}
-		if !uuid.Equal(ChunkAreasInfoEx[m.ID].Meadow.ID, uuid.Nil) {
-			for _, v := range ChunkAreasInfoEx[m.ID].Meadow.Masterships {
-				var am AreaMastery
-				am.Name = "meadow"
-				am.Size = ChunkAreasInfoEx[m.ID].Meadow.Size
-				am.AreaID = ChunkAreasInfoEx[m.ID].Meadow.ID
-				ChunkMasteryInfo[m.ID][v.Mastership.NameID] = append(ChunkMasteryInfo[m.ID][v.Mastership.NameID], am)
-			}
-		}
-		if !uuid.Equal(ChunkAreasInfoEx[m.ID].Lake.ID, uuid.Nil) {
-			for _, v := range ChunkAreasInfoEx[m.ID].Lake.Masterships {
-				var am AreaMastery
-				am.Name = "lake"
-				am.Size = ChunkAreasInfoEx[m.ID].Lake.Size
-				am.AreaID = ChunkAreasInfoEx[m.ID].Lake.ID
-				ChunkMasteryInfo[m.ID][v.Mastership.NameID] = append(ChunkMasteryInfo[m.ID][v.Mastership.NameID], am)
-			}
-		}
-		if len(ChunkAreasInfoEx[m.ID].Rivers) > 0 && !uuid.Equal(ChunkAreasInfoEx[m.ID].Rivers[0].ID, uuid.Nil) {
-			for _, v := range ChunkAreasInfoEx[m.ID].Rivers {
-				for _, vr := range v.Masterships {
-					var am AreaMastery
-					am.Name = "river"
-					am.Size = v.Size
-					am.AreaID = v.ID
-					ChunkMasteryInfo[m.ID][vr.Mastership.NameID] = append(ChunkMasteryInfo[m.ID][vr.Mastership.NameID], am)
-
-				}
-
-			}
-
-		}
-	}
 }

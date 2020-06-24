@@ -1,5 +1,6 @@
 {
     "version": "2.0.0",
+    "cwd": "${workspaceFolder}",
     "tasks": [
         {
             "label": "Build and run",
@@ -8,7 +9,7 @@
                 "command": "go build && ./G3_TClient"
             },
             "windows": {
-                "command": "go build && G3_TClient.exe"
+                "command": "go build; ./G3_TClient.exe"
             },
             "group": {
                 "kind": "build",
